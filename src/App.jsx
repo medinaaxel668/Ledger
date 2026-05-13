@@ -681,7 +681,11 @@ export default function App() {
                 </div>
               )}
 
-              <button onClick={handleSubmit} disabled={!form.cantidadUSDT || !form.precioCompraARS || saving} style={{ width: "100%", background: `linear-gradient(135deg,${C.accent},#c2410c)`, border: "none", color: C.bg, padding: "13px", borderRadius: "9px", cursor: "pointer", fontFamily: "inherit", fontSize: "13px", fontWeight: 700, letterSpacing: "0.08em", opacity: (!form.cantidadUSDT || !form.precioCompraARS || saving) ? 0.4 : 1, transition: "opacity .2s" }}>
+              <button 
+                onClick={handleSubmit} 
+                disabled={(form.tipo === "Compra" ? !form.totalARS_Input : !form.cantidadUSDT) || !form.precioCompraARS || saving} 
+                style={{ width: "100%", background: `linear-gradient(135deg,${C.accent},#c2410c)`, border: "none", color: C.bg, padding: "13px", borderRadius: "9px", cursor: "pointer", fontFamily: "inherit", fontSize: "13px", fontWeight: 700, letterSpacing: "0.08em", opacity: ((form.tipo === "Compra" ? !form.totalARS_Input : !form.cantidadUSDT) || !form.precioCompraARS || saving) ? 0.4 : 1, transition: "opacity .2s" }}
+              >
                 {saving ? "GUARDANDO…" : editId ? "GUARDAR CAMBIOS" : "REGISTRAR OPERACIÓN"}
               </button>
             </div>
