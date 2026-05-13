@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { supabase } from "./supabase";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -178,9 +178,12 @@ export default function App() {
   const [ops, setOps] = useState([]);
   const [loading, setLoading] = useState(false);
   const [form, setForm] = useState(emptyForm);
-  const [platforms, setPlatforms] = useState(DEFAULT_PLATFORMS);
+  const [platforms, setPlatforms] = useState(() => loadFromStorage(STORAGE_KEYS.platforms, DEFAULT_PLATFORMS));
   const [newPlatInput, setNewPlatInput] = useState("");
   const [showAddPlat, setShowAddPlat] = useState(false);
+  const [paymentMethods, setPaymentMethods] = useState(() => loadFromStorage(STORAGE_KEYS.paymentMethods, DEFAULT_PAYMENT_METHODS));
+  const [newPaymentInput, setNewPaymentInput] = useState("");
+  const [showAddPayment, setShowAddPayment] = useState(null); // null | 'origen' | 'destino'
   const [tab, setTab] = useState("registro");
   const [editId, setEditId] = useState(null);
   const [filterPlat, setFilterPlat] = useState("Todas");
@@ -188,6 +191,7 @@ export default function App() {
   const [previewImg, setPreviewImg] = useState(null);
   const [fifoHint, setFifoHint] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [deleteId, setDeleteId] = useState(null);
   const fileRef = useRef();
 
   // ── Auth ──
@@ -294,15 +298,36 @@ export default function App() {
     window.scrollTo(0, 0);
   };
 
-  const handleDelete = async (id) => {
-    await supabase.from("operaciones").delete().eq("id", id);
+  const confirmDelete = async () => {
+    if (!deleteId) return;
+    await supabase.from("operaciones").delete().eq("id", deleteId);
     await loadOps();
+    setDeleteId(null);
   };
 
   const addPlatform = () => {
     const name = newPlatInput.trim();
-    if (name && !platforms.includes(name)) { setPlatforms(p => [...p, name]); set("plataforma", name); }
-    setNewPlatInput(""); setShowAddPlat(false);
+    if (name && !platforms.includes(name)) {
+      const updated = [...platforms, name];
+      setPlatforms(updated);
+      saveToStorage(STORAGE_KEYS.platforms, updated);
+      set("plataforma", name);
+    } else if (name) {
+      set("plataforma", name);
+    }
+    setNewPlatInput("");
+    setShowAddPlat(false);
+  };
+
+  const addPaymentMethod = (field) => {
+    const name = newPaymentInput.trim();
+    if (name && !paymentMethods.includes(name)) {
+      const updated = [...paymentMethods, name];
+      setPaymentMethods(updated);
+      saveToStorage(STORAGE_KEYS.paymentMethods, updated);
+    }
+    if (name) set(field, name);
+    setNewPaymentInput(""); setShowAddPayment(null);
   };
 
   const handleLogout = async () => { await supabase.auth.signOut(); };
@@ -335,12 +360,86 @@ export default function App() {
     calcOp(form.cantidadUSDT, form.precioCompraARS, form.precioVentaARS, form.comisionPct, form.comisionEnvioUSDT, form.tipo),
     [form]);
 
-  const exportCSV = () => {
-    const h = ["Fecha", "Plataforma", "Tipo", "Cantidad USDT", "Precio Costo ARS", "Precio Venta ARS", "Comision %", "Com.Envio USDT", "Total Com.USDT", "Total Com.ARS", "Total ARS", "Ganancia ARS", "Ganancia USDT", "Notas"];
-    const rows = ops.map(o => [o.fecha, o.plataforma, o.tipo, o.cantidad_usdt, o.precio_compra_ars, o.precio_venta_ars || "", o.comision_pct || 0, o.comision_envio_usdt || 0, (o.total_com_usdt || 0).toFixed(6), (o.total_com_ars || 0).toFixed(2), (o.total_ars || 0).toFixed(2), o.ganancia_ars != null ? o.ganancia_ars.toFixed(2) : "", o.ganancia_usdt != null ? o.ganancia_usdt.toFixed(6) : "", `"${o.notas || ""}"`]);
-    const csv = [h, ...rows].map(r => r.join(",")).join("\n");
-    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
-    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `p2p_${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+  const downloadCSV = (filename, csvContent) => {
+    const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+  };
+
+  const exportCSVSeparados = () => {
+    const date = new Date().toISOString().slice(0, 10);
+    const compras = ops.filter(o => o.tipo === "Compra");
+    const ventas = ops.filter(o => o.tipo === "Venta");
+
+    // ── CSV Compras ──
+    const hC = ["Fecha", "Cantidad USDT", "Precio Compra ARS", "Plataforma", "Total ARS", "Comision %", "Total Com.USDT", "Total Com.ARS", "Medio Pago Origen", "Medio Pago Destino", "Notas", ""];
+    const rowsC = compras.map(o => [
+      o.fecha,
+      o.cantidad_usdt,
+      o.precio_compra_ars,
+      o.plataforma,
+      (o.total_ars || 0).toFixed(2),
+      o.comision_pct || 0,
+      (o.total_com_usdt || 0).toFixed(6),
+      (o.total_com_ars || 0).toFixed(2),
+      o.medio_pago_origen || "",
+      o.medio_pago_destino || "",
+      `"${o.notas || ""}"`,
+      ""
+    ]);
+
+    const totC_USDT = compras.reduce((a, o) => a + (o.cantidad_usdt || 0), 0);
+    const totC_ARS = compras.reduce((a, o) => a + (o.total_ars || 0), 0);
+    const totC_ComUSDT = compras.reduce((a, o) => a + (o.total_com_usdt || 0), 0);
+    const totC_ComARS = compras.reduce((a, o) => a + (o.total_com_ars || 0), 0);
+
+    const summaryC = [
+      [],
+      ["TOTAL USDT COMPRADOS", totC_USDT.toFixed(4), "", "", "", "", "", "", "", "", "", ""],
+      ["TOTAL ARS GASTADOS", "", "", "", totC_ARS.toFixed(2), "", "", "", "", "", "", ""],
+      ["TOTAL COMISIONES USDT", "", "", "", "", "", totC_ComUSDT.toFixed(6), "", "", "", "", ""],
+      ["TOTAL COMISIONES ARS", "", "", "", "", "", "", totC_ComARS.toFixed(2), "", "", "", ""],
+      ["TOTAL NETO (sin comisiones)", "", "", "", (totC_ARS - totC_ComARS).toFixed(2), "", "", "", "", "", "", ""],
+    ];
+    const csvC = [hC, ...rowsC, ...summaryC].map(r => r.join(",")).join("\n");
+
+    // ── CSV Ventas ──
+    const hV = ["Fecha", "Cantidad USDT", "Precio Costo ARS", "Precio Venta ARS", "Total ARS", "Comision %", "Total Com.USDT", "Total Com.ARS", "Medio Pago Origen", "Medio Pago Destino", "Notas", "Ganancia ARS", "Ganancia USDT"];
+    const rowsV = ventas.map(o => [
+      o.fecha,
+      o.cantidad_usdt,
+      o.precio_compra_ars,
+      o.precio_venta_ars || "",
+      (o.total_ars || 0).toFixed(2),
+      o.comision_pct || 0,
+      (o.total_com_usdt || 0).toFixed(6),
+      (o.total_com_ars || 0).toFixed(2),
+      o.medio_pago_origen || "",
+      o.medio_pago_destino || "",
+      `"${o.notas || ""}"`,
+      o.ganancia_ars != null ? o.ganancia_ars.toFixed(2) : "",
+      o.ganancia_usdt != null ? o.ganancia_usdt.toFixed(6) : ""
+    ]);
+
+    const totV_USDT = ventas.reduce((a, o) => a + (o.cantidad_usdt || 0), 0);
+    const totV_ARS = ventas.reduce((a, o) => a + (o.total_ars || 0), 0);
+    const totV_ComUSDT = ventas.reduce((a, o) => a + (o.total_com_usdt || 0), 0);
+    const totV_ComARS = ventas.reduce((a, o) => a + (o.total_com_ars || 0), 0);
+    const totV_GanARS = ventas.reduce((a, o) => a + (o.ganancia_ars || 0), 0);
+    const totV_GanUSDT = ventas.reduce((a, o) => a + (o.ganancia_usdt || 0), 0);
+
+    const summaryV = [
+      [],
+      ["TOTAL USDT VENDIDOS", totV_USDT.toFixed(4), "", "", "", "", "", "", "", "", "", ""],
+      ["TOTAL ARS RECIBIDOS", "", "", "", totV_ARS.toFixed(2), "", "", "", "", "", "", ""],
+      ["TOTAL COMISIONES USDT", "", "", "", "", "", totV_ComUSDT.toFixed(6), "", "", "", "", ""],
+      ["TOTAL COMISIONES ARS", "", "", "", "", "", "", totV_ComARS.toFixed(2), "", "", "", ""],
+      ["TOTAL GANANCIA ARS", "", "", "", "", "", "", "", "", "", totV_GanARS.toFixed(2), ""],
+      ["TOTAL GANANCIA USDT", "", "", "", "", "", "", "", "", "", "", totV_GanUSDT.toFixed(6)],
+    ];
+    const csvV = [hV, ...rowsV, ...summaryV].map(r => r.join(",")).join("\n");
+
+    downloadCSV(`p2p_compras_${date}.csv`, csvC);
+    setTimeout(() => downloadCSV(`p2p_ventas_${date}.csv`, csvV), 300);
   };
 
   // ── Auth loading ──
@@ -368,6 +467,16 @@ export default function App() {
         .tb{transition:all .2s}
         .tb:hover{color:${C.accent}!important}
         .pb{transition:all .2s}
+        @media (max-width: 768px) {
+          .desktop-only { display: none !important; }
+          .mobile-only { display: block !important; }
+          .grid-2 { grid-template-columns: 1fr !important; }
+          .header-actions { flex-direction: column; gap: 8px; width: 100%; }
+          .header-actions button { width: 100%; }
+        }
+        @media (min-width: 769px) {
+          .mobile-only { display: none !important; }
+        }
       `}</style>
 
       {/* HEADER */}
@@ -383,7 +492,7 @@ export default function App() {
           <div style={{ fontSize: "11px", color: C.muted, padding: "6px 14px", background: C.surface, borderRadius: "6px", border: `1px solid ${C.border}` }}>
             <span style={{ color: C.accent, fontWeight: 600 }}>{stats.nOps}</span> ops · <span style={{ color: C.sell, fontWeight: 600 }}>{fmtUSDT(stats.balanceUSDT)}</span>
           </div>
-          <button onClick={exportCSV} style={{ background: C.accentDim, border: `1px solid ${C.accentMid}`, color: C.accent, padding: "8px 14px", borderRadius: "7px", cursor: "pointer", fontSize: "11px", fontFamily: "inherit", fontWeight: 600 }}>↓ CSV</button>
+          <button onClick={exportCSVSeparados} style={{ background: C.accentDim, border: `1px solid ${C.accentMid}`, color: C.accent, padding: "8px 14px", borderRadius: "7px", cursor: "pointer", fontSize: "11px", fontFamily: "inherit", fontWeight: 600 }}>↓ CSV</button>
           <button onClick={handleLogout} style={{ background: "transparent", border: `1px solid ${C.border}`, color: C.muted, padding: "8px 14px", borderRadius: "7px", cursor: "pointer", fontSize: "11px", fontFamily: "inherit" }}>Salir</button>
         </div>
       </div>
@@ -408,7 +517,7 @@ export default function App() {
                 {editId && <button onClick={() => { setEditId(null); setForm(emptyForm); }} style={{ fontSize: "11px", color: C.muted, background: "transparent", border: `1px solid ${C.border}`, borderRadius: "5px", padding: "4px 10px", cursor: "pointer", fontFamily: "inherit" }}>cancelar</button>}
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", marginBottom: "14px" }}>
+              <div className="grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", marginBottom: "14px" }}>
                 <F label="FECHA Y HORA"><input type="datetime-local" value={form.fecha} onChange={e => set("fecha", e.target.value)} style={inp} /></F>
                 <F label="PLATAFORMA">
                   <div style={{ display: "flex", gap: "6px" }}>
@@ -441,7 +550,7 @@ export default function App() {
                 <F label="CANTIDAD USDT"><input type="number" placeholder="0.00" value={form.cantidadUSDT} onChange={e => set("cantidadUSDT", e.target.value)} style={inp} /></F>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", marginBottom: "14px" }}>
+              <div className="grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", marginBottom: "14px" }}>
                 <F label={form.tipo === "Venta" ? "COSTO FIFO ARS/USDT" : "PRECIO COMPRA ARS/USDT"}>
                   <input type="number" placeholder="0.00" value={form.precioCompraARS} onChange={e => set("precioCompraARS", e.target.value)} style={{ ...inp, borderColor: fifoHint && form.tipo === "Venta" ? C.accentMid : C.border }} />
                   {fifoHint && form.tipo === "Venta" && (
@@ -456,13 +565,47 @@ export default function App() {
                 </F>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", marginBottom: "14px" }}>
+              <div className="grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", marginBottom: "14px" }}>
                 <F label="COMISIÓN GENERAL (%)">
                   <input type="number" placeholder="ej: 0.20" step="0.01" value={form.comisionPct} onChange={e => set("comisionPct", e.target.value)} style={inp} />
                   {form.comisionPct && form.cantidadUSDT && <div style={{ marginTop: "5px", fontSize: "10px", color: C.mutedMid }}>= {fmtN((parseFloat(form.cantidadUSDT) * parseFloat(form.comisionPct) / 100), 4)} USDT</div>}
                 </F>
                 <F label="COMISIÓN ENVÍO USDT (opc.)">
                   <input type="number" placeholder="0.0000" step="0.0001" value={form.comisionEnvioUSDT} onChange={e => set("comisionEnvioUSDT", e.target.value)} style={inp} />
+                </F>
+              </div>
+
+              {/* ── Medios de Pago ── */}
+              <div className="grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", marginBottom: "14px" }}>
+                <F label={form.tipo === "Compra" ? "PAGO DESDE (BANCO/WALLET)" : "ENVÍO USDT DESDE"}>
+                  <div style={{ display: "flex", gap: "6px" }}>
+                    <select value={form.medioPagoOrigen} onChange={e => set("medioPagoOrigen", e.target.value)} style={{ ...inp, flex: 1 }}>
+                      <option value="">— Seleccionar —</option>
+                      {paymentMethods.map(p => <option key={p}>{p}</option>)}
+                    </select>
+                    <button onClick={() => setShowAddPayment(v => v === "origen" ? null : "origen")} style={{ background: C.accentDim, border: `1px solid ${C.accentMid}`, color: C.accent, borderRadius: "7px", padding: "0 11px", cursor: "pointer", fontSize: "18px" }}>+</button>
+                  </div>
+                  {showAddPayment === "origen" && (
+                    <div style={{ display: "flex", gap: "6px", marginTop: "8px" }}>
+                      <input placeholder="Nuevo medio…" value={newPaymentInput} onChange={e => setNewPaymentInput(e.target.value)} onKeyDown={e => e.key === "Enter" && addPaymentMethod("medioPagoOrigen")} style={{ ...inp, flex: 1 }} />
+                      <button onClick={() => addPaymentMethod("medioPagoOrigen")} style={{ background: C.accent, border: "none", color: C.bg, borderRadius: "7px", padding: "0 14px", cursor: "pointer", fontWeight: 700, fontFamily: "inherit", fontSize: "12px" }}>OK</button>
+                    </div>
+                  )}
+                </F>
+                <F label={form.tipo === "Compra" ? "RECIBO USDT EN" : "RECIBO ARS EN (BANCO/WALLET)"}>
+                  <div style={{ display: "flex", gap: "6px" }}>
+                    <select value={form.medioPagoDestino} onChange={e => set("medioPagoDestino", e.target.value)} style={{ ...inp, flex: 1 }}>
+                      <option value="">— Seleccionar —</option>
+                      {paymentMethods.map(p => <option key={p}>{p}</option>)}
+                    </select>
+                    <button onClick={() => setShowAddPayment(v => v === "destino" ? null : "destino")} style={{ background: C.accentDim, border: `1px solid ${C.accentMid}`, color: C.accent, borderRadius: "7px", padding: "0 11px", cursor: "pointer", fontSize: "18px" }}>+</button>
+                  </div>
+                  {showAddPayment === "destino" && (
+                    <div style={{ display: "flex", gap: "6px", marginTop: "8px" }}>
+                      <input placeholder="Nuevo medio…" value={newPaymentInput} onChange={e => setNewPaymentInput(e.target.value)} onKeyDown={e => e.key === "Enter" && addPaymentMethod("medioPagoDestino")} style={{ ...inp, flex: 1 }} />
+                      <button onClick={() => addPaymentMethod("medioPagoDestino")} style={{ background: C.accent, border: "none", color: C.bg, borderRadius: "7px", padding: "0 14px", cursor: "pointer", fontWeight: 700, fontFamily: "inherit", fontSize: "12px" }}>OK</button>
+                    </div>
+                  )}
                 </F>
               </div>
 
@@ -489,7 +632,7 @@ export default function App() {
               {form.cantidadUSDT && form.precioCompraARS && (
                 <div style={{ background: "#0e0c0a", border: `1px solid ${C.borderMid}`, borderRadius: "10px", padding: "16px", marginBottom: "18px" }}>
                   <div style={{ fontSize: "9px", color: C.muted, letterSpacing: "0.14em", marginBottom: "12px" }}>RESUMEN</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "14px" }}>
+                  <div className="grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "14px" }}>
                     <MS label="TOTAL ARS" value={fmtARS(preview.totalARS)} color={C.text} />
                     <MS label="COMISIÓN" value={fmtUSDT(preview.totalComUSDT)} color={C.buy} />
                     {form.tipo === "Venta" && form.precioVentaARS ? <MS label="GANANCIA ARS" value={fmtARS(preview.gananciaARS)} color={preview.gananciaARS >= 0 ? C.accent : C.red} /> : <div />}
@@ -528,44 +671,74 @@ export default function App() {
             {filtered.length === 0
               ? <div style={{ textAlign: "center", padding: "80px 0", color: C.muted }}><div style={{ fontSize: "34px", marginBottom: "12px", opacity: 0.3 }}>◈</div><div style={{ fontSize: "13px" }}>Sin operaciones registradas</div></div>
               : (
-                <div style={{ overflowX: "auto", borderRadius: "12px", border: `1px solid ${C.border}` }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
-                    <thead>
-                      <tr style={{ background: C.surface }}>
-                        {["FECHA", "PLAT.", "TIPO", "USDT", "P.COSTO", "P.VENTA", "TOTAL ARS", "COMISIÓN", "GANANCIA ARS", "GANANCIA U", ""].map((h, i) => (
-                          <th key={i} style={{ textAlign: "left", padding: "10px 13px", fontSize: "9px", color: C.muted, letterSpacing: "0.12em", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filtered.map((op, idx) => (
-                        <tr key={op.id} className="rh" style={{ background: idx % 2 === 0 ? "transparent" : C.surface, transition: "background .15s" }}>
-                          <td style={{ padding: "10px 13px", color: C.muted, whiteSpace: "nowrap", fontSize: "11px" }}>{op.fecha?.slice(0, 16).replace("T", " ")}</td>
-                          <td style={{ padding: "10px 13px", fontSize: "11px" }}>{op.plataforma}</td>
-                          <td style={{ padding: "10px 13px" }}>
-                            <span style={{ padding: "3px 7px", borderRadius: "4px", fontSize: "9px", fontWeight: 700, background: op.tipo === "Compra" ? C.buyDim : C.sellDim, color: op.tipo === "Compra" ? C.buy : C.sell }}>
-                              {op.tipo === "Compra" ? "↓ COMPRA" : "↑ VENTA"}
-                            </span>
-                          </td>
-                          <td style={{ padding: "10px 13px", fontWeight: 600 }}>{fmtN(op.cantidad_usdt, 2)}</td>
-                          <td style={{ padding: "10px 13px", color: C.mutedMid }}>{fmtARS(op.precio_compra_ars)}</td>
-                          <td style={{ padding: "10px 13px", color: C.mutedMid }}>{op.precio_venta_ars ? fmtARS(op.precio_venta_ars) : "—"}</td>
-                          <td style={{ padding: "10px 13px", fontWeight: 500 }}>{fmtARS(op.total_ars)}</td>
-                          <td style={{ padding: "10px 13px", color: C.buy }}>{fmtUSDT(op.total_com_usdt)}</td>
-                          <td style={{ padding: "10px 13px", fontWeight: 700, color: op.ganancia_ars == null ? C.muted : op.ganancia_ars >= 0 ? C.accent : C.red }}>{op.ganancia_ars != null ? fmtARS(op.ganancia_ars) : "—"}</td>
-                          <td style={{ padding: "10px 13px", color: op.ganancia_usdt == null ? C.muted : op.ganancia_usdt >= 0 ? C.sell : C.red }}>{op.ganancia_usdt != null ? fmtUSDT(op.ganancia_usdt) : "—"}</td>
-                          <td style={{ padding: "10px 13px" }}>
-                            <div style={{ display: "flex", gap: "6px" }}>
-                              {op.imagen_url && <button className="ib" onClick={() => setPreviewImg(op.imagen_url)} style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: "14px" }}>🖼</button>}
-                              <button className="ib" onClick={() => handleEdit(op)} style={{ background: "transparent", border: "none", color: C.mutedMid, cursor: "pointer", fontSize: "15px" }}>✎</button>
-                              <button className="ib" onClick={() => handleDelete(op.id)} style={{ background: "transparent", border: "none", color: C.red, cursor: "pointer", fontSize: "17px", opacity: 0.55 }}>×</button>
-                            </div>
-                          </td>
+                <>
+                  <div className="desktop-only" style={{ overflowX: "auto", borderRadius: "12px", border: `1px solid ${C.border}` }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                      <thead>
+                        <tr style={{ background: C.surface }}>
+                          {["FECHA", "PLAT.", "TIPO", "USDT", "P.COSTO", "P.VENTA", "TOTAL ARS", "COMISIÓN", "GANANCIA ARS", "GANANCIA U", ""].map((h, i) => (
+                            <th key={i} style={{ textAlign: "left", padding: "10px 13px", fontSize: "9px", color: C.muted, letterSpacing: "0.12em", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>{h}</th>
+                          ))}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {filtered.map((op, idx) => (
+                          <tr key={op.id} className="rh" style={{ background: idx % 2 === 0 ? "transparent" : C.surface, transition: "background .15s" }}>
+                            <td style={{ padding: "10px 13px", color: C.muted, whiteSpace: "nowrap", fontSize: "11px" }}>{op.fecha?.slice(0, 16).replace("T", " ")}</td>
+                            <td style={{ padding: "10px 13px", fontSize: "11px" }}>{op.plataforma}</td>
+                            <td style={{ padding: "10px 13px" }}>
+                              <span style={{ padding: "3px 7px", borderRadius: "4px", fontSize: "9px", fontWeight: 700, background: op.tipo === "Compra" ? C.buyDim : C.sellDim, color: op.tipo === "Compra" ? C.buy : C.sell }}>
+                                {op.tipo === "Compra" ? "↓ COMPRA" : "↑ VENTA"}
+                              </span>
+                            </td>
+                            <td style={{ padding: "10px 13px", fontWeight: 600 }}>{fmtN(op.cantidad_usdt, 2)}</td>
+                            <td style={{ padding: "10px 13px", color: C.mutedMid }}>{fmtARS(op.precio_compra_ars)}</td>
+                            <td style={{ padding: "10px 13px", color: C.mutedMid }}>{op.precio_venta_ars ? fmtARS(op.precio_venta_ars) : "—"}</td>
+                            <td style={{ padding: "10px 13px", fontWeight: 500 }}>{fmtARS(op.total_ars)}</td>
+                            <td style={{ padding: "10px 13px", color: C.buy }}>{fmtUSDT(op.total_com_usdt)}</td>
+                            <td style={{ padding: "10px 13px", fontWeight: 700, color: op.ganancia_ars == null ? C.muted : op.ganancia_ars >= 0 ? C.accent : C.red }}>{op.ganancia_ars != null ? fmtARS(op.ganancia_ars) : "—"}</td>
+                            <td style={{ padding: "10px 13px", color: op.ganancia_usdt == null ? C.muted : op.ganancia_usdt >= 0 ? C.sell : C.red }}>{op.ganancia_usdt != null ? fmtUSDT(op.ganancia_usdt) : "—"}</td>
+                            <td style={{ padding: "10px 13px" }}>
+                              <div style={{ display: "flex", gap: "6px" }}>
+                                {op.imagen_url && <button className="ib" onClick={() => setPreviewImg(op.imagen_url)} style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: "14px" }}>🖼</button>}
+                                <button className="ib" onClick={() => handleEdit(op)} style={{ background: "transparent", border: "none", color: C.mutedMid, cursor: "pointer", fontSize: "15px" }}>✎</button>
+                                <button className="ib" onClick={() => setDeleteId(op.id)} style={{ background: "transparent", border: "none", color: C.red, cursor: "pointer", fontSize: "17px", opacity: 0.55 }}>×</button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="mobile-only" style={{ display: "grid", gap: "12px" }}>
+                    {filtered.map(op => (
+                      <div key={op.id} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "16px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "12px" }}>
+                          <div style={{ fontSize: "11px", color: C.muted }}>{op.fecha?.slice(0, 16).replace("T", " ")} · {op.plataforma}</div>
+                          <span style={{ padding: "3px 7px", borderRadius: "4px", fontSize: "9px", fontWeight: 700, background: op.tipo === "Compra" ? C.buyDim : C.sellDim, color: op.tipo === "Compra" ? C.buy : C.sell }}>
+                            {op.tipo === "Compra" ? "↓ COMPRA" : "↑ VENTA"}
+                          </span>
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "12px" }}>
+                          <div><Lbl>CANTIDAD</Lbl><div style={{ fontSize: "14px", fontWeight: 700 }}>{fmtUSDT(op.cantidad_usdt)}</div></div>
+                          <div><Lbl>TOTAL ARS</Lbl><div style={{ fontSize: "14px", fontWeight: 700 }}>{fmtARS(op.total_ars)}</div></div>
+                          {op.tipo === "Venta" && (
+                            <>
+                              <div><Lbl>GANANCIA ARS</Lbl><div style={{ fontSize: "14px", fontWeight: 700, color: op.ganancia_ars >= 0 ? C.accent : C.red }}>{fmtARS(op.ganancia_ars)}</div></div>
+                              <div><Lbl>GANANCIA USDT</Lbl><div style={{ fontSize: "14px", fontWeight: 700, color: op.ganancia_usdt >= 0 ? C.sell : C.red }}>{fmtUSDT(op.ganancia_usdt)}</div></div>
+                            </>
+                          )}
+                        </div>
+                        <div style={{ display: "flex", gap: "8px", borderTop: `1px solid ${C.border}`, paddingTop: "12px", marginTop: "8px" }}>
+                          {op.imagen_url && <button onClick={() => setPreviewImg(op.imagen_url)} style={{ flex: 1, background: C.surface, border: `1px solid ${C.border}`, color: C.text, padding: "8px", borderRadius: "6px", fontSize: "11px" }}>Imagen</button>}
+                          <button onClick={() => handleEdit(op)} style={{ flex: 1, background: C.surface, border: `1px solid ${C.border}`, color: C.text, padding: "8px", borderRadius: "6px", fontSize: "11px" }}>Editar</button>
+                          <button onClick={() => setDeleteId(op.id)} style={{ flex: 1, background: C.redDim, border: `1px solid ${C.red}`, color: C.red, padding: "8px", borderRadius: "6px", fontSize: "11px" }}>Borrar</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
               )}
           </div>
         )}
@@ -583,7 +756,7 @@ export default function App() {
             </div>
 
             <div style={{ fontSize: "10px", color: C.muted, letterSpacing: "0.15em", marginBottom: "13px" }}>RENDIMIENTO POR PERÍODO</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "13px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "13px" }} className="grid-2">
               {Object.values(stats.periodoStats).map(p => (
                 <div key={p.label} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "20px" }}>
                   <div style={{ fontSize: "9px", color: C.muted, letterSpacing: "0.18em", marginBottom: "14px" }}>{p.label}</div>
@@ -598,6 +771,21 @@ export default function App() {
           </div>
         )}
       </div>
+
+      {/* MODAL ELIMINAR */}
+      {deleteId && (
+        <div onClick={() => setDeleteId(null)} style={{ position: "fixed", inset: 0, background: "#000000b8", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000, padding: "20px" }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: "16px", padding: "30px", width: "100%", maxWidth: "400px", textAlign: "center" }}>
+            <div style={{ fontSize: "32px", marginBottom: "16px" }}>⚠</div>
+            <div style={{ fontSize: "18px", fontWeight: 700, marginBottom: "10px" }}>¿Confirmar eliminación?</div>
+            <div style={{ fontSize: "13px", color: C.mutedMid, marginBottom: "24px", lineHeight: "1.5" }}>Esta acción es permanente. Se recalculardán automáticamente el stock FIFO y las ganancias.</div>
+            <div style={{ display: "flex", gap: "10px" }}>
+              <button onClick={() => setDeleteId(null)} style={{ flex: 1, background: C.surface, border: `1px solid ${C.border}`, color: C.text, padding: "12px", borderRadius: "9px", cursor: "pointer", fontWeight: 600 }}>Cancelar</button>
+              <button onClick={confirmDelete} style={{ flex: 1, background: C.red, border: "none", color: "#fff", padding: "12px", borderRadius: "9px", cursor: "pointer", fontWeight: 700 }}>Eliminar</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {previewImg && (
         <div onClick={() => setPreviewImg(null)} style={{ position: "fixed", inset: 0, background: "#000000b8", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "24px" }}>
