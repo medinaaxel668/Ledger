@@ -34,6 +34,7 @@ const emptyForm = {
   plataforma: "Bybit P2P",
   tipo: "Compra",
   cantidadUSDT: "",
+  totalARS_Input: "",
   precioCompraARS: "",
   precioVentaARS: "",
   comisionPct: "",
@@ -242,18 +243,29 @@ export default function App() {
   };
 
   const handleSubmit = async () => {
-    if (!form.cantidadUSDT || !form.precioCompraARS) return;
+    const pC = parseFloat(form.precioCompraARS) || 0;
+    const pV = parseFloat(form.precioVentaARS) || 0;
+    const comPct = parseFloat(form.comisionPct) || 0;
+    const comEnvio = parseFloat(form.comisionEnvioUSDT) || 0;
+    
+    let qty = parseFloat(form.cantidadUSDT) || 0;
+    if (form.tipo === "Compra" && form.totalARS_Input && pC > 0) {
+      const tARS = parseFloat(form.totalARS_Input) || 0;
+      qty = (tARS / pC - comEnvio) / (1 + comPct / 100);
+    }
+
+    if (!qty || !pC) return;
     setSaving(true);
-    const calc = calcOp(form.cantidadUSDT, form.precioCompraARS, form.precioVentaARS, form.comisionPct, form.comisionEnvioUSDT, form.tipo);
+    const calc = calcOp(qty, pC, pV, comPct, comEnvio, form.tipo);
     const record = {
       fecha: form.fecha,
       plataforma: form.plataforma,
       tipo: form.tipo,
-      cantidad_usdt: parseFloat(form.cantidadUSDT),
-      precio_compra_ars: parseFloat(form.precioCompraARS),
-      precio_venta_ars: form.precioVentaARS ? parseFloat(form.precioVentaARS) : null,
-      comision_pct: form.comisionPct ? parseFloat(form.comisionPct) : null,
-      comision_envio_usdt: form.comisionEnvioUSDT ? parseFloat(form.comisionEnvioUSDT) : null,
+      cantidad_usdt: qty,
+      precio_compra_ars: pC,
+      precio_venta_ars: pV || null,
+      comision_pct: comPct || null,
+      comision_envio_usdt: comEnvio || null,
       total_com_usdt: calc.totalComUSDT,
       total_com_ars: calc.totalComARS,
       total_ars: calc.totalARS,
@@ -283,6 +295,7 @@ export default function App() {
       plataforma: op.plataforma,
       tipo: op.tipo,
       cantidadUSDT: op.cantidad_usdt?.toString() || "",
+      totalARS_Input: op.tipo === "Compra" ? op.total_ars?.toString() || "" : "",
       precioCompraARS: op.precio_compra_ars?.toString() || "",
       precioVentaARS: op.precio_venta_ars?.toString() || "",
       comisionPct: op.comision_pct?.toString() || "",
@@ -356,9 +369,23 @@ export default function App() {
     return { totalGananciaARS, totalGananciaUSDT, totalComisionesUSDT, balanceUSDT, balanceARS, nOps: ops.length, periodoStats };
   }, [ops]);
 
-  const preview = useMemo(() =>
-    calcOp(form.cantidadUSDT, form.precioCompraARS, form.precioVentaARS, form.comisionPct, form.comisionEnvioUSDT, form.tipo),
-    [form]);
+  const preview = useMemo(() => {
+    let q = parseFloat(form.cantidadUSDT) || 0;
+    let pC = parseFloat(form.precioCompraARS) || 0;
+    let pV = parseFloat(form.precioVentaARS) || 0;
+    let comPct = parseFloat(form.comisionPct) || 0;
+    let comEnvio = parseFloat(form.comisionEnvioUSDT) || 0;
+
+    if (form.tipo === "Compra" && form.totalARS_Input && pC > 0) {
+      // Si el usuario ingresa ARS, calculamos la cantidad de USDT bruta (sin comisiones)
+      // totalARS = qty * pC * (1 + comPct/100) + comEnvio * pC
+      // qty = (totalARS / pC - comEnvio) / (1 + comPct/100)
+      const tARS = parseFloat(form.totalARS_Input) || 0;
+      q = (tARS / pC - comEnvio) / (1 + comPct / 100);
+    }
+
+    return calcOp(q, pC, pV, comPct, comEnvio, form.tipo);
+  }, [form]);
 
   const downloadCSV = (filename, csvContent) => {
     const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
@@ -547,7 +574,16 @@ export default function App() {
               </div>
 
               <div style={{ marginBottom: "14px" }}>
-                <F label="CANTIDAD USDT"><input type="number" placeholder="0.00" value={form.cantidadUSDT} onChange={e => set("cantidadUSDT", e.target.value)} style={inp} /></F>
+                {form.tipo === "Compra" ? (
+                  <F label="CANTIDAD EN ARS (LO QUE PAGASTE)">
+                    <input type="number" placeholder="0.00" value={form.totalARS_Input} onChange={e => set("totalARS_Input", e.target.value)} style={inp} />
+                    {preview.totalARS > 0 && <div style={{ marginTop: "5px", fontSize: "11px", color: C.accent }}>= {fmtUSDT(preview.totalARS / (parseFloat(form.precioCompraARS) || 1))} brutos</div>}
+                  </F>
+                ) : (
+                  <F label="CANTIDAD DE USDT (LO QUE VENDES)">
+                    <input type="number" placeholder="0.00" value={form.cantidadUSDT} onChange={e => set("cantidadUSDT", e.target.value)} style={inp} />
+                  </F>
+                )}
               </div>
 
               <div className="grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", marginBottom: "14px" }}>
