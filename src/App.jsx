@@ -3,6 +3,31 @@ import { supabase } from "./supabase";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const DEFAULT_PLATFORMS = ["Bybit P2P", "OKX P2P", "El Dorado"];
+const DEFAULT_PAYMENT_METHODS = ["Mercado Pago", "Brubank", "Banco Galicia", "Lemon", "Belo"];
+
+const STORAGE_KEYS = { platforms: "p2p_platforms", paymentMethods: "p2p_payment_methods" };
+
+function loadFromStorage(key, defaults) {
+  try {
+    const saved = localStorage.getItem(key);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        return [...new Set([...defaults, ...parsed])];
+      }
+    }
+  } catch (e) {
+    console.error("Error loading from storage:", e);
+  }
+  return [...defaults];
+}
+function saveToStorage(key, data) {
+  try {
+    localStorage.setItem(key, JSON.stringify(data));
+  } catch (e) {
+    console.error("Error saving to storage:", e);
+  }
+}
 
 const emptyForm = {
   fecha: new Date().toISOString().slice(0, 16),
@@ -13,6 +38,8 @@ const emptyForm = {
   precioVentaARS: "",
   comisionPct: "",
   comisionEnvioUSDT: "",
+  medioPagoOrigen: "",
+  medioPagoDestino: "",
   notas: "",
 };
 
@@ -228,6 +255,8 @@ export default function App() {
       total_ars: calc.totalARS,
       ganancia_ars: calc.gananciaARS,
       ganancia_usdt: calc.gananciaUSDT,
+      medio_pago_origen: form.medioPagoOrigen || null,
+      medio_pago_destino: form.medioPagoDestino || null,
       notas: form.notas || null,
       imagen_url: form.imagenUrl || null,
     };
@@ -239,7 +268,7 @@ export default function App() {
       await supabase.from("operaciones").insert(record);
     }
     await loadOps();
-    setForm({ ...emptyForm, plataforma: form.plataforma, comisionPct: form.comisionPct });
+    setForm({ ...emptyForm, plataforma: form.plataforma, comisionPct: form.comisionPct, medioPagoOrigen: form.medioPagoOrigen, medioPagoDestino: form.medioPagoDestino });
     setFifoHint(null);
     setSaving(false);
   };
@@ -254,6 +283,8 @@ export default function App() {
       precioVentaARS: op.precio_venta_ars?.toString() || "",
       comisionPct: op.comision_pct?.toString() || "",
       comisionEnvioUSDT: op.comision_envio_usdt?.toString() || "",
+      medioPagoOrigen: op.medio_pago_origen || "",
+      medioPagoDestino: op.medio_pago_destino || "",
       notas: op.notas || "",
       imagenUrl: op.imagen_url || null,
       imagenNombre: op.imagen_url ? "imagen guardada" : null,
