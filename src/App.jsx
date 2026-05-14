@@ -278,10 +278,12 @@ export default function App() {
     };
 
     if (editId) {
-      await supabase.from("operaciones").update(record).eq("id", editId);
+      const { error } = await supabase.from("operaciones").update(record).eq("id", editId);
+      if (error) { alert("Error al actualizar: " + error.message); console.error(error); setSaving(false); return; }
       setEditId(null);
     } else {
-      await supabase.from("operaciones").insert(record);
+      const { error } = await supabase.from("operaciones").insert(record);
+      if (error) { alert("Error al guardar: " + error.message); console.error(error); setSaving(false); return; }
     }
     await loadOps();
     setForm({ ...emptyForm, plataforma: form.plataforma, comisionPct: form.comisionPct, medioPagoOrigen: form.medioPagoOrigen, medioPagoDestino: form.medioPagoDestino });
