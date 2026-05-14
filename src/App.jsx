@@ -368,7 +368,23 @@ export default function App() {
       const opsP = ventas.filter(o => new Date(o.fecha) >= desde);
       periodoStats[key] = { label, gananciaARS: opsP.reduce((a, o) => a + (o.ganancia_ars || 0), 0), gananciaUSDT: opsP.reduce((a, o) => a + (o.ganancia_usdt || 0), 0), nOps: opsP.length };
     }
-    return { totalGananciaARS, totalGananciaUSDT, totalComisionesUSDT, balanceUSDT, balanceARS, nOps: ops.length, periodoStats };
+    const bankStats = {};
+    const thisMonthStart = startOf(now, "month");
+    const opsThisMonth = ops.filter(o => new Date(o.fecha) >= thisMonthStart);
+    
+    opsThisMonth.forEach(o => {
+      const ars = o.total_ars || 0;
+      if (o.tipo === "Compra" && o.medio_pago_origen) {
+        if (!bankStats[o.medio_pago_origen]) bankStats[o.medio_pago_origen] = { sent: 0, received: 0 };
+        bankStats[o.medio_pago_origen].sent += ars;
+      }
+      if (o.tipo === "Venta" && o.medio_pago_destino) {
+        if (!bankStats[o.medio_pago_destino]) bankStats[o.medio_pago_destino] = { sent: 0, received: 0 };
+        bankStats[o.medio_pago_destino].received += ars;
+      }
+    });
+
+    return { totalGananciaARS, totalGananciaUSDT, totalComisionesUSDT, balanceUSDT, balanceARS, nOps: ops.length, periodoStats, bankStats };
   }, [ops]);
 
   const preview = useMemo(() => {
@@ -808,7 +824,40 @@ export default function App() {
                   <div style={{ fontSize: "10px", color: C.muted }}>{p.nOps} venta{p.nOps !== 1 ? "s" : ""}</div>
                 </div>
               ))}
+            <div style={{ height: "1px", background: C.border, margin: "26px 0" }} />
+
+            <div style={{ fontSize: "10px", color: C.muted, letterSpacing: "0.15em", marginBottom: "13px" }}>FLUJO POR BANCO (ESTE MES)</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "13px" }}>
+              {Object.keys(stats.bankStats).length === 0 ? (
+                <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "20px", color: C.muted, fontSize: "11px", border: `1px dashed ${C.border}`, borderRadius: "12px" }}>
+                  Sin movimientos bancarios este mes
+                </div>
+              ) : (
+                Object.entries(stats.bankStats).map(([bank, data]) => (
+                  <div key={bank} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "18px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+                      <div style={{ fontSize: "13px", fontWeight: 700, color: C.text }}>{bank}</div>
+                      <div style={{ fontSize: "10px", color: C.muted, background: C.surface, padding: "3px 8px", borderRadius: "4px" }}>Neto: {fmtARS(data.received - data.sent)}</div>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "15px" }}>
+                      <div>
+                        <div style={{ fontSize: "9px", color: C.muted, marginBottom: "4px" }}>ENVIADO (COMPRAS)</div>
+                        <div style={{ fontSize: "14px", fontWeight: 600, color: C.red }}>{fmtARS(data.sent)}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: "9px", color: C.muted, marginBottom: "4px" }}>RECIBIDO (VENTAS)</div>
+                        <div style={{ fontSize: "14px", fontWeight: 600, color: C.sell }}>{fmtARS(data.received)}</div>
+                      </div>
+                    </div>
+                    <div style={{ marginTop: "14px", paddingTop: "12px", borderTop: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", fontSize: "10px" }}>
+                      <span style={{ color: C.muted }}>Volumen Total</span>
+                      <span style={{ fontWeight: 700, color: C.text }}>{fmtARS(data.sent + data.received)}</span>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
+
             {stats.nOps === 0 && <div style={{ textAlign: "center", padding: "40px", color: C.muted, fontSize: "13px" }}>Registrá tu primera operación para ver el resumen</div>}
           </div>
         )}
